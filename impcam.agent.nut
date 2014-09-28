@@ -23,39 +23,6 @@ requests <- []
 
 jpeg_buffer <- null
 
-device.on("jpeg_start", function(size) {
-    jpeg_buffer = blob(size);
-});
-
-device.on("jpeg_chunk", function(v) {
-    local offset = v[0];
-    local b = v[1];
-    for(local i = offset; i < (offset+b.len()); i++) {
-        if(i < jpeg_buffer.len()) {
-            jpeg_buffer[i] = b[i-offset];
-        }
-    }
-});
-
-device.on("jpeg_end", function(v) {
-    local s = "";
-    foreach(chr in jpeg_buffer) {
-        s += format("%c", chr);
-    }
-    local req = http.post(MY_SERVER_URL, {}, s);
-    req.sendsync();
-    foreach(res in requests) {
-        res.header("Location", "http://demo2.electricimp.com/hackathon/camera.jpg");
-        res.send(302, "Found\n");
-    }
-    server.log(format("Agent: JPEG Sent (%d bytes)"s.len()));
-});
-
-http.onrequest(function(req, res) {
-    device.send("take_picture", 1);
-    requests.push(res);
-});
-
 
 //----------------------------------------------------------------------------------------
 //Adding code for twitter code
@@ -81,7 +48,7 @@ class Twitter {
     // URLs
     streamUrl = "https://stream.twitter.com/1.1/";
     tweetUrl = "https://api.twitter.com/1.1/statuses/update.json";
-    
+    tweetURLwithMedia = "https://api.twitter.com/1.1/statuses/update_with_media.json"
     // Streaming
     streamingRequest = null;
     _reconnectTimeout = null;
@@ -110,10 +77,15 @@ class Twitter {
      *   bool indicating whether the tweet was successful(if no cb was supplied)
      *   nothing(if a callback was supplied)
      **************************************************************************/
-    function tweet(status, cb = null) {
+    function tweet(status, cb = null, image=null) {
         local headers = { };
-        
-        local request = _oAuth1Request(tweetUrl, headers, { "status": status} );
+        local request= null;
+        if(image == null){
+            request = _oAuth1Request(tweetURL, headers, { "status": status});
+        }else{
+            request = _oAuth1RequestwithImage(tweetURLwithMedia, headers, { "status": status}, image);
+        }
+       
         if (cb == null) {
             local response = request.sendsync();
             if (response && response.statuscode != 200) {
@@ -256,7 +228,97 @@ class Twitter {
             server.log("ERROR " + error.code + ": " + error.message);
         }
     }
+    
+    function _oAuth1RequestwithImage(postUrl, headers, data, image) {
+        local time = time();
+        local nonce = time;
+ 
+        local parm_string = http.urlencode({ oauth_consumer_key = _consumerKey });
+        parm_string += "&" + http.urlencode({ oauth_nonce = nonce });
+        parm_string += "&" + http.urlencode({ oauth_signature_method = "HMAC-SHA1" });
+        parm_string += "&" + http.urlencode({ oauth_timestamp = time });
+        parm_string += "&" + http.urlencode({ oauth_token = _accessToken });
+        parm_string += "&" + http.urlencode({ oauth_version = "1.0" });
+        parm_string += "&" + http.urlencode(data);
+        
+        local signature_string = "POST&" + _encode(postUrl) + "&" + _encode(parm_string);
+        
+        local key = format("%s&%s", _encode(_consumerSecret), _encode(_accessSecret));
+        local sha1 = _encode(http.base64encode(http.hash.hmacsha1(signature_string, key)));
+        
+        local auth_header = "oauth_consumer_key=\""+_consumerKey+"\", ";
+        auth_header += "oauth_nonce=\""+nonce+"\", ";
+        auth_header += "oauth_signature=\""+sha1+"\", ";
+        auth_header += "oauth_signature_method=\""+"HMAC-SHA1"+"\", ";
+        auth_header += "oauth_timestamp=\""+time+"\", ";
+        auth_header += "oauth_token=\""+_accessToken+"\", ";
+        auth_header += "oauth_version=\"1.0\"";
+       
+
+        local boundary = "cce6735153bf14e47e999e68bb183e70a1fa7fc89722fc1efdf03a917340";
+
+        local headers = { 
+            "Host": "api.twitter.com",
+            "User Agent": "Hackbright Boo",
+            "Authorization": "OAuth " + auth_header,
+            "Content-Type": "multipart/form-data;boundary="+boundary,
+            "Content-Length": image.len(), 
+            "Accept-Encoding": "gzip"
+        };
+       
+        local enter = "\r\n";
+        local requestBody ="";
+        requestBody+="--"+boundary+enter;
+        requestBody+="Content-Disposition: form-data; name=\"status\" "+data+" "+enter;
+        requestBody+="--"+boundary+enter;
+        requestBody+="Content-Type: application/octet-stream"+ enter;
+        requestBody+="Content-Disposition: form-data; name=\"media[]\"; filename=\"media.jpg\""+enter;
+        requestBody+="Content-Type: image"+enter;
+        requestBody+=image+enter;
+        requestBody+="--"+boundary;
+
+        local request = http.post(postUrl, headers, requestBody);
+        return request;
+   }
+
 
 }
- 
+
+// -----------------------------------------------------------------------------
+
+device.on("jpeg_start", function(size) {
+    jpeg_buffer = blob(size);
+});
+
+device.on("jpeg_chunk", function(v) {
+    local offset = v[0];
+    local b = v[1];
+    for(local i = offset; i < (offset+b.len()); i++) {
+        if(i < jpeg_buffer.len()) {
+            jpeg_buffer[i] = b[i-offset];
+        }
+    }
+});
+
+device.on("jpeg_end", function(v) {
+    local s = "";
+    foreach(chr in jpeg_buffer) {
+        s += format("%c", chr);
+    }
+    local req = http.post(MY_SERVER_URL, {}, s);
+    req.sendsync();
+    foreach(res in requests) {
+        res.header("Location", "http://demo2.electricimp.com/hackathon/camera.jpg");
+        res.send(302, "Found\n");
+    }
+    server.log(format("Agent: JPEG Sent (%d bytes)"s.len()));
+    twitter.tweet("PhotoBoo got you! Taken: "+ time(), null, s);
+    twitter.tweet("I can still post a normal tweet "+ time());
+});
+
+http.onrequest(function(req, res) {
+    device.send("take_picture", 1);
+    requests.push(res);
+});
+
 twitter <- Twitter(API_KEY, API_SECRET, AUTH_TOKEN, TOKEN_SECRET);
